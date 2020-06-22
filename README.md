@@ -2,6 +2,6 @@
 
 This page uses the HTML5 [`AudioContext.createAnalyser()`](https://developer.mozilla.org/en-US/docs/Web/API/BaseAudioContext/createAnalyser) API to visualize the input audio of your device microphone.
 
-A demo page can be found [here](https://static.yige.ch/html5-mic/). It works in modern versions of desktop browsers, as well as in iOS and Android.
+Please select the input device. The selection will be remembered in SessionStorage. Click the screen again to reselect the device.
 
-Note: The dB value on the page varies from your device microphone, and should not be considered accurate.
+A demo page can be found [here](https://gitcdn.link/repo/it9gamelog/html5-mic-visualizer/master/index.html). It works in modern versions of desktop browsers, as well as in iOS and Android.

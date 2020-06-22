@@ -1,112 +1,166 @@
 window.onload = function () {
     "use strict";
+
+    var hashCode = s => s.split('').reduce((a,b)=>{a=((a<<5)-a)+b.charCodeAt(0);return a&a},0);
+    var pathChecksum = hashCode(document.location.pathname);
+    const SESSION_DEVICE_ID = `html5-mic-visualizer:${pathChecksum}:device-id`;
+
     var paths = document.getElementsByTagName('path');
     var visualizer = document.getElementById('visualizer');
-    var mask = visualizer.getElementById('mask');
-    var h = document.getElementsByTagName('h1')[0];
-    var hSub = document.getElementsByTagName('h1')[1];
-    var AudioContext;
-    var audioContent;
-    var start = false;
-    var permission = false;
-    var path;
-    var seconds = 0;
-    var loud_volume_threshold = 30;
-    
-    var soundAllowed = function (stream) {
-        permission = true;
-        var audioStream = audioContent.createMediaStreamSource( stream );
-        var analyser = audioContent.createAnalyser();
-        var fftSize = 1024;
+    var monitorSingleton = null;
 
-        analyser.fftSize = fftSize;
-        audioStream.connect(analyser);
-
-        var bufferLength = analyser.frequencyBinCount;
-        var frequencyArray = new Uint8Array(bufferLength);
-        
-        visualizer.setAttribute('viewBox', '0 0 255 255');
-      
-        for (var i = 0 ; i < 255; i++) {
-            path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            path.setAttribute('stroke-dasharray', '4,1');
-            mask.appendChild(path);
+    document.onmousedown = (evt) => {
+        if (monitorSingleton)
+        {
+            monitorSingleton.stop();
+            monitorSingleton = null;
         }
-        var doDraw = function () {
-            requestAnimationFrame(doDraw);
-            if (start) {
-                analyser.getByteFrequencyData(frequencyArray);
-                var adjustedLength;
-                for (var i = 0 ; i < 255; i++) {
-                  	adjustedLength = Math.floor(frequencyArray[i]) - (Math.floor(frequencyArray[i]) % 5);
-                    paths[i].setAttribute('d', 'M '+ (i) +',255 l 0,-' + adjustedLength);
-                }
-            }
-            else {
-                for (var i = 0 ; i < 255; i++) {
-                    paths[i].setAttribute('d', 'M '+ (i) +',255 l 0,-' + 0);
-                }
-            }
-        }
-        var showVolume = function () {
-            setTimeout(showVolume, 500);
-            if (start) {
-                analyser.getByteFrequencyData(frequencyArray);
-                var total = 0
-                for(var i = 0; i < 255; i++) {
-                   var x = frequencyArray[i];
-                   total += x * x;
-                }
-                var rms = Math.sqrt(total / bufferLength);
-                var db = 20 * ( Math.log(rms) / Math.log(10) );
-                db = Math.max(db, 0); // sanity check
-                h.innerHTML = Math.floor(db) + " dB";
-    
-                if (db >= loud_volume_threshold) {
-                    seconds += 0.5;
-                    if (seconds >= 5) {
-                        hSub.innerHTML = "You’ve been in loud environment for<span> " + Math.floor(seconds) + " </span>seconds." ;
-                    }
-                }
-                else {
-                    seconds = 0;
-                    hSub.innerHTML = "";
-                }
-            }
-            else {
-                h.innerHTML = "";
-                hSub.innerHTML = "";
-            }
-        }
-
-        doDraw();
-        showVolume();
+        sessionStorage.removeItem(SESSION_DEVICE_ID);
+        init();
     }
 
-    var soundNotAllowed = function (error) {
-        h.innerHTML = "You must allow your microphone.";
-        console.log(error);
+    class SoundMonitor
+    {
+        stream;
+        visualizer;
+        binCount;
+        minDecibels;
+        maxDecibels;
+        minFreq;
+        maxFreq;
+
+        analyser;
+        frequencyArray;
+        isStart;
+        paths;
+        binSize;
+
+        constructor(stream, visualizer, binCount, minDecibels, maxDecibels, minFreq, maxFreq)
+        {
+            this.stream = stream;
+            this.visualizer = visualizer;
+            this.binCount = binCount == null ? 128 : binCount;
+            this.minDecibels = minDecibels == null ? -72 : minDecibels;
+            this.maxDecibels = maxDecibels == null ? -10 : maxDecibels;
+            this.minFreq = minFreq == null ? 0 : minFreq;
+            this.maxFreq = maxFreq == null ? 8000 : maxFreq;
+        }
+
+        start()
+        {
+            var AudioContext = window.AudioContext || window.webkitAudioContext;
+            var audioContent = new AudioContext();
+            var audioStream = audioContent.createMediaStreamSource(this.stream);
+            this.analyser = audioContent.createAnalyser();
+            this.analyser.fftSize = 4096; // Hardcoded
+            this.analyser.minDecibels = this.minDecibels;
+            this.analyser.maxDecibels = this.maxDecibels;
+            audioStream.connect(this.analyser);
+
+            // console.log(audioContent.sampleRate);
+
+            var bufferLength = this.analyser.frequencyBinCount;
+            this.binSize = audioContent.sampleRate / bufferLength / 2;
+            this.frequencyArray = new Uint8Array(bufferLength);
+            this.visualizer.setAttribute('viewBox', `0 0 ${this.binCount} 255`);
+    
+            var mask = visualizer.getElementById('mask');
+            this._clearMask();
+            for (var i = 0 ; i < this.binCount; i++) {
+                var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                // path.setAttribute('stroke-dasharray', '4,1');
+                this.paths.push(path);
+                mask.appendChild(path);
+            }
+            this.isStart = true;
+            this._draw();
+        }
+
+        stop()
+        {
+            this.isStart = false;
+            this._clearMask();
+        }
+
+        _clearMask()
+        {
+            var mask = this.visualizer.getElementById('mask');
+            while (mask.firstChild) mask.removeChild(mask.lastChild);
+            this.paths = [];
+        }
+
+        _draw()
+        {
+            if (this.isStart) requestAnimationFrame(() => this._draw());
+            this.analyser.getByteFrequencyData(this.frequencyArray);
+            var adjustedLength;
+            var c = 0;
+            var freqStep = (this.maxFreq-this.minFreq) / this.binCount;
+            for (var f = this.minFreq, c = 0;
+                 f <= this.maxFreq, c < this.binCount; 
+                 f += freqStep, c++) {
+                var s = Math.min(Math.floor(f / this.binSize), this.frequencyArray.length - 1);
+                var e = Math.min(Math.floor((f + freqStep) / this.binSize), this.frequencyArray.length);
+                var sum = 0;
+                for (var i = s; i < e; i++)
+                    sum += this.frequencyArray[i];
+                adjustedLength = sum / Math.max(e - s, 1);
+                this.paths[c].setAttribute('d', `M ${c+0.5},255 v -${adjustedLength}`);
+            }
+        }
     }
 
+    function htmlToElements(html)
+    {
+        var template = document.createElement('template');
+        template.innerHTML = html;
+        return template.content.childNodes;
+    }
 
-    document.getElementById('button').onclick = function () {
-        if (start) {
-            start = false;
-            this.innerHTML = "<span class='fa fa-play'></span>Start Listen";
-            this.className = "green-button";
+    async function launchMonitor(deviceId)
+    {
+        sessionStorage.setItem(SESSION_DEVICE_ID, deviceId);
+
+        document.getElementById("prompt-container").style.display = 'none';
+        var stream = await navigator.mediaDevices.getUserMedia({audio: { deviceId: { exact: deviceId }}});
+        // The parameters is visually optimized for human voice
+        monitorSingleton = new SoundMonitor(stream, visualizer, 32, -84, -40, 64, 2400);
+        monitorSingleton.start();
+    }
+
+    document.getElementById("prompt-permission").onclick = () => { init(); };
+
+    async function init()
+    {
+        await navigator.mediaDevices.getUserMedia({audio:true})
+
+        document.getElementById("prompt-container").style.display = '';
+        document.getElementById("prompt-permission").style.display = 'none';
+        document.getElementById("prompt-select-device").style.display = '';
+
+        var devices = await navigator.mediaDevices.enumerateDevices();
+        var container = document.getElementById("prompt-select-device");
+        while (container.firstChild) {
+            if (!container.lastChild.value) break;
+            container.removeChild(container.lastChild);
         }
-        else {
-            if (!permission) {
-                navigator.mediaDevices.getUserMedia({audio:true})
-                    .then(soundAllowed)
-                    .catch(soundNotAllowed);
+        var previousDevice = sessionStorage.getItem(SESSION_DEVICE_ID);
 
-                AudioContext = window.AudioContext || window.webkitAudioContext;
-                audioContent = new AudioContext();
+        container.onchange = (evt) => {
+            if (container.value)
+                launchMonitor(container.value);
+        };
+        for (const d of devices)
+        {
+            if (d.kind != "audioinput") continue;
+            if (previousDevice != null && d.deviceId == previousDevice) {
+                launchMonitor(d.deviceId);
+                break;
             }
-            start = true;
-            this.innerHTML = "<span class='fa fa-stop'></span>Stop Listen";
-            this.className = "red-button";
+            var button = htmlToElements(`<option value="${d.deviceId}">${d.label}</option>`)[0];
+            container.appendChild(button);
         }
-    };
+    }
+
+    init();
 };
